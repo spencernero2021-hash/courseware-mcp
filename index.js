@@ -76,6 +76,55 @@ const tools = [
           description: "Number of practice questions to request.",
           default: 20,
         },
+        student_level: {
+          type: "string",
+          description: "Student level, for example beginner, normal, advanced, or sprint review.",
+          default: "normal",
+        },
+        days_available: {
+          type: "integer",
+          description: "Number of days available for review. If omitted, produce general advice.",
+        },
+        output_language: {
+          type: "string",
+          description: "Output language. Defaults to Chinese.",
+          default: "Chinese",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "make_layered_study_prompts",
+    description:
+      "Create four separate DeepSeek prompts for learning extraction, Mermaid mind map generation, review planning, and simulated exam questions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        exam_goal: {
+          type: "string",
+          description: "Exam goal, course name, or study scenario.",
+          default: "prepare for an exam",
+        },
+        question_count: {
+          type: "integer",
+          description: "Number of practice questions to request.",
+          default: 20,
+        },
+        student_level: {
+          type: "string",
+          description: "Student level, for example beginner, normal, advanced, or sprint review.",
+          default: "normal",
+        },
+        days_available: {
+          type: "integer",
+          description: "Number of days available for review. If omitted, produce general advice.",
+        },
+        output_language: {
+          type: "string",
+          description: "Output language. Defaults to Chinese.",
+          default: "Chinese",
+        },
       },
       additionalProperties: false,
     },
@@ -157,23 +206,131 @@ function runExtractor(args) {
 function makeStudyPackPrompt(args = {}) {
   const goal = args.exam_goal || "prepare for an exam";
   const questionCount = args.question_count ?? 20;
+  const language = args.output_language || "Chinese";
+  const level = args.student_level || "normal";
+  const days = args.days_available
+    ? `The student has ${args.days_available} day(s) available for review.`
+    : "If no exam date is known, give a flexible short-term review plan.";
   return [
     `Use the extracted courseware to help the student ${goal}.`,
+    `Student level: ${level}. ${days}`,
     "",
-    "Produce a concise but high-value study pack in Chinese unless the courseware is clearly in another language.",
+    `Produce a concise but high-value study pack in ${language} unless the courseware strongly requires another language.`,
     "",
     "Required sections:",
-    "1. Course overview: one paragraph.",
-    "2. Chapter/slide structure: identify the main modules.",
-    "3. Key points: definitions, formulas, methods, and conclusions.",
-    "4. Difficult points and common mistakes.",
-    "5. Exam-oriented priority ranking: high/medium/low with reasons.",
-    "6. Mermaid mind map using `mindmap` syntax.",
-    "7. Review advice: a practical plan for short-term exam prep.",
-    `8. ${questionCount} simulated questions: mix choice, fill-in, short answer, calculation/application when suitable.`,
-    "9. Answer key and explanations. Include source page/slide references whenever possible.",
+    "1. Learning extraction layer: identify modules, concepts, formulas, methods, examples, and prerequisite knowledge.",
+    "2. Exam focus layer: rank knowledge points as high/medium/low priority with reasons and source page/slide references.",
+    "3. Difficult and error-prone layer: list confusing ideas, common mistakes, and how to avoid them.",
+    "4. Mind map layer: output a Mermaid `mindmap` that is compact enough to review before an exam.",
+    "5. Review advice layer: produce a practical schedule, review order, memorization targets, exercise targets, and final-day checklist.",
+    `6. Simulated question layer: create ${questionCount} exam-style questions with difficulty, tested knowledge point, answer, explanation, and source reference.`,
     "",
-    "Do not merely summarize in order. Reorganize the material from an exam-preparation perspective.",
+    "Question mix guidance:",
+    "- Include choice/fill-in/judgment/short-answer/application or calculation questions as appropriate for the subject.",
+    "- Include at least 20% common-mistake questions.",
+    "- Mark each question as easy, medium, or hard.",
+    "",
+    "Quality rules:",
+    "- Do not merely summarize in order. Reorganize the material from an exam-preparation perspective.",
+    "- If the courseware is incomplete or OCR text is noisy, state uncertainty and avoid inventing unsupported facts.",
+    "- Include page/slide references whenever possible.",
+  ].join("\n");
+}
+
+function makeLayeredStudyPrompts(args = {}) {
+  const goal = args.exam_goal || "prepare for an exam";
+  const questionCount = args.question_count ?? 20;
+  const language = args.output_language || "Chinese";
+  const level = args.student_level || "normal";
+  const daysLine = args.days_available
+    ? `The student has ${args.days_available} day(s) before the exam.`
+    : "No fixed review duration is provided.";
+
+  const shared = [
+    `Goal: help the student ${goal}.`,
+    `Student level: ${level}. ${daysLine}`,
+    `Output language: ${language}.`,
+    "Use source page/slide references whenever possible.",
+    "If OCR or extraction looks noisy, mention uncertainty instead of inventing details.",
+  ].join("\n");
+
+  const prompts = {
+    learning_extraction: [
+      shared,
+      "",
+      "Task: Build the learning extraction layer from the extracted courseware.",
+      "Output:",
+      "1. Course/module outline.",
+      "2. Core concepts and definitions.",
+      "3. Formulas, rules, methods, and procedures.",
+      "4. Examples or case patterns from the material.",
+      "5. Prerequisite knowledge the student should review first.",
+      "6. High-frequency exam points, with high/medium/low priority and reasons.",
+      "7. Difficult points, confusing pairs, and common mistakes.",
+    ].join("\n"),
+    mind_map: [
+      shared,
+      "",
+      "Task: Create a Mermaid mind map from the extracted courseware and the learning extraction layer.",
+      "Output only:",
+      "1. A Mermaid code block using `mindmap` syntax.",
+      "2. A short legend explaining high-priority and error-prone nodes.",
+      "",
+      "Rules:",
+      "- Keep node names short.",
+      "- Use no more than 4 hierarchy levels unless the course is very complex.",
+      "- Organize by exam logic, not by slide order.",
+    ].join("\n"),
+    review_advice: [
+      shared,
+      "",
+      "Task: Create the review advice layer.",
+      "Output:",
+      "1. Review order and why.",
+      "2. Daily plan or flexible staged plan.",
+      "3. Memorization checklist.",
+      "4. Practice checklist.",
+      "5. Final 24-hour sprint plan.",
+      "6. What to skip or de-prioritize if time is short.",
+      "7. Self-test method for checking mastery.",
+    ].join("\n"),
+    practice_questions: [
+      shared,
+      "",
+      `Task: Create ${questionCount} simulated exam questions from the extracted courseware.`,
+      "For each question include:",
+      "- Type: choice, fill-in, judgment, short answer, application, calculation, or comprehensive.",
+      "- Difficulty: easy, medium, or hard.",
+      "- Tested knowledge point.",
+      "- Source page/slide reference.",
+      "- Question.",
+      "- Answer.",
+      "- Explanation.",
+      "- Common mistake reminder.",
+      "",
+      "Question mix rules:",
+      "- Cover all high-priority points.",
+      "- Include at least 20% common-mistake questions.",
+      "- Avoid questions that require facts not present in the courseware unless clearly marked as extension.",
+    ].join("\n"),
+  };
+
+  return [
+    "# Layered Study Prompts",
+    "",
+    "Use these prompts after `extract_courseware`. Run them separately when the courseware is long, or use the full study pack prompt for a single-pass result.",
+    "",
+    "## 1. Learning Extraction Layer",
+    prompts.learning_extraction,
+    "",
+    "## 2. Mind Map Layer",
+    prompts.mind_map,
+    "",
+    "## 3. Review Advice Layer",
+    prompts.review_advice,
+    "",
+    "## 4. Simulated Questions Layer",
+    prompts.practice_questions,
   ].join("\n");
 }
 
@@ -187,7 +344,7 @@ async function handle(request) {
       result: {
         protocolVersion: params?.protocolVersion || "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "courseware-mcp", version: "0.1.0" },
+        serverInfo: { name: "courseware-mcp", version: "0.3.0" },
       },
     };
   }
@@ -206,6 +363,16 @@ async function handle(request) {
         id,
         result: {
           content: [{ type: "text", text: makeStudyPackPrompt(args) }],
+        },
+      };
+    }
+
+    if (name === "make_layered_study_prompts") {
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: makeLayeredStudyPrompts(args) }],
         },
       };
     }
