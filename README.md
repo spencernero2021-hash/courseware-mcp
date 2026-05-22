@@ -18,7 +18,13 @@ This avoids relying on the model to improvise `.pptx` ZIP parsing every time.
 
 ## PDF Strategy
 
-PDF extraction uses `pypdf` when available in the configured Python runtime. If a PDF has little extractable text, it is probably scanned; use OCR on rendered pages as a follow-up.
+PDF extraction uses `pypdf` when available in the configured Python runtime. If a PDF has little extractable text, it is probably scanned; the MCP can render pages locally with Windows `Windows.Data.Pdf` and run Windows OCR on the rendered page images.
+
+Useful `extract_courseware` PDF options:
+
+- `ocr_scanned_pdf`: defaults to `true`.
+- `ocr_language`: `auto`, `en-US`, or `zh-Hans-CN`.
+- `max_ocr_pages`: defaults to `80`; set `0` for no explicit limit.
 
 ## Claude Code config
 
@@ -42,6 +48,8 @@ Add this to `.mcp.json`, replacing paths as needed:
 ## Recommended DeepSeek Workflow
 
 1. Call `extract_courseware` on the PDF/PPTX.
+   - For scanned Chinese PDFs, pass `ocr_language: "zh-Hans-CN"`.
+   - For scanned English PDFs, pass `ocr_language: "en-US"`.
 2. Call `make_study_pack_prompt`.
 3. Use the extracted Markdown plus the prompt to generate:
    - key points

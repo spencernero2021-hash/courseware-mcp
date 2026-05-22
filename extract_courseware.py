@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -19,6 +20,8 @@ NS = {
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
     "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
 }
+
+OCR_TEXT_THRESHOLD_PER_PAGE = 25
 
 
 def clean_text(value):
@@ -241,18 +244,117 @@ def extract_pptx(file_path):
     }
 
 
-def extract_pdf(file_path):
+def run_pdf_ocr(file_path, language, max_pages):
+    script = Path(__file__).with_name("pdf-ocr.ps1")
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-PdfPath",
+        str(Path(file_path).resolve()),
+        "-Language",
+        language or "auto",
+        "-MaxPages",
+        str(max_pages or 0),
+    ]
+    completed = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    return json.loads(completed.stdout)
+
+
+def should_ocr_pdf(pages):
+    if not pages:
+        return False
+    total_chars = sum(len(page.get("text", "")) for page in pages)
+    empty_pages = sum(1 for page in pages if not page.get("text"))
+    average_chars = total_chars / len(pages)
+    return empty_pages / len(pages) > 0.5 or average_chars < OCR_TEXT_THRESHOLD_PER_PAGE
+
+
+def merge_pdf_ocr_pages(pages, ocr_result):
+    ocr_by_page = {page["page"]: page for page in ocr_result.get("pages", [])}
+    merged = []
+    for page in pages:
+        ocr_page = ocr_by_page.get(page["page"])
+        original_text = page.get("text", "")
+        ocr_text = clean_text((ocr_page or {}).get("text", ""))
+        source = "text"
+
+        if ocr_text and (not original_text or len(ocr_text) > len(original_text) * 1.4):
+            text = ocr_text
+            source = "ocr"
+        else:
+            text = original_text
+
+        merged.append(
+            {
+                "page": page["page"],
+                "text": text,
+                "source": source,
+                "text_extraction": original_text,
+                "ocr_text": ocr_text,
+            }
+        )
+    return merged
+
+
+def extract_pdf(file_path, ocr_scanned_pdf=False, ocr_language="auto", max_ocr_pages=80):
     warnings = []
     pages = []
     try:
         from pypdf import PdfReader
     except Exception as exc:
+        if ocr_scanned_pdf:
+            try:
+                ocr_result = run_pdf_ocr(file_path, ocr_language, max_ocr_pages)
+                pages = [
+                    {
+                        "page": page["page"],
+                        "text": clean_text(page.get("text", "")),
+                        "source": "ocr",
+                        "text_extraction": "",
+                        "ocr_text": clean_text(page.get("text", "")),
+                    }
+                    for page in ocr_result.get("pages", [])
+                ]
+                return {
+                    "type": "pdf",
+                    "file": str(Path(file_path).resolve()),
+                    "page_count": ocr_result.get("pageCount", len(pages)),
+                    "pages": pages,
+                    "ocr": {
+                        "attempted": True,
+                        "language": ocr_result.get("language"),
+                        "processed_pages": ocr_result.get("processedPages", 0),
+                    },
+                    "warnings": [
+                        f"pypdf unavailable in this Python runtime: {exc}",
+                        "Fell back to local Windows PDF rendering OCR.",
+                    ],
+                }
+            except Exception as ocr_exc:
+                warning = (
+                    f"pypdf unavailable in this Python runtime: {exc}; "
+                    f"scanned PDF OCR also failed: {ocr_exc}"
+                )
+        else:
+            warning = f"pypdf unavailable in this Python runtime: {exc}"
         return {
             "type": "pdf",
             "file": str(Path(file_path).resolve()),
             "page_count": 0,
             "pages": [],
-            "warnings": [f"pypdf unavailable in this Python runtime: {exc}"],
+            "ocr": {"attempted": False, "language": None, "processed_pages": 0},
+            "warnings": [warning],
         }
 
     reader = PdfReader(file_path)
@@ -262,17 +364,36 @@ def extract_pdf(file_path):
         except Exception as exc:
             text = ""
             warnings.append(f"Page {index} text extraction failed: {exc}")
-        pages.append({"page": index, "text": text})
+        pages.append({"page": index, "text": text, "source": "text"})
 
     empty_pages = sum(1 for p in pages if not p["text"])
     if pages and empty_pages / len(pages) > 0.5:
-        warnings.append("Many pages contain little or no text. This may be a scanned PDF; use OCR for those pages.")
+        warnings.append("Many pages contain little or no text. This may be a scanned PDF.")
+
+    ocr_result = None
+    if ocr_scanned_pdf and should_ocr_pdf(pages):
+        try:
+            ocr_result = run_pdf_ocr(file_path, ocr_language, max_ocr_pages)
+            pages = merge_pdf_ocr_pages(pages, ocr_result)
+            warnings.append(
+                f"Scanned PDF OCR ran locally with language {ocr_result.get('language', ocr_language)} "
+                f"on {ocr_result.get('processedPages', 0)} page(s)."
+            )
+            if ocr_result.get("processedPages", 0) < len(reader.pages):
+                warnings.append("OCR page limit was reached; some pages were not OCR processed.")
+        except Exception as exc:
+            warnings.append(f"Scanned PDF OCR failed: {exc}")
 
     return {
         "type": "pdf",
         "file": str(Path(file_path).resolve()),
         "page_count": len(pages),
         "pages": pages,
+        "ocr": {
+            "attempted": bool(ocr_result),
+            "language": (ocr_result or {}).get("language"),
+            "processed_pages": (ocr_result or {}).get("processedPages", 0),
+        },
         "warnings": warnings,
     }
 
@@ -321,7 +442,8 @@ def result_to_markdown(result, max_chars):
             lines.append("")
     else:
         for page in result.get("pages", []):
-            lines.append(f"## Page {page['page']}")
+            source = page.get("source", "text")
+            lines.append(f"## Page {page['page']} ({source})")
             lines.append(page.get("text") or "[No extractable text]")
             lines.append("")
 
@@ -338,6 +460,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", required=True)
     parser.add_argument("--max-chars", type=int, default=60000)
+    parser.add_argument("--ocr-scanned-pdf", action="store_true")
+    parser.add_argument("--ocr-language", default="auto")
+    parser.add_argument("--max-ocr-pages", type=int, default=80)
     args = parser.parse_args()
 
     file_path = Path(args.file)
@@ -348,7 +473,12 @@ def main():
     if ext in (".pptx", ".ppt"):
         result = extract_pptx(file_path)
     elif ext == ".pdf":
-        result = extract_pdf(file_path)
+        result = extract_pdf(
+            file_path,
+            ocr_scanned_pdf=args.ocr_scanned_pdf,
+            ocr_language=args.ocr_language,
+            max_ocr_pages=args.max_ocr_pages,
+        )
     else:
         raise ValueError(f"Unsupported courseware type: {ext}")
 

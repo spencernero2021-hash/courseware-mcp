@@ -7,9 +7,15 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const extractorScript = join(__dirname, "extract_courseware.py");
-
-const bundledPython =
-  "C:\\Users\\沈云浩\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe";
+const runtimePython = join(
+  process.env.USERPROFILE || "",
+  ".cache",
+  "codex-runtimes",
+  "codex-primary-runtime",
+  "dependencies",
+  "python",
+  "python.exe",
+);
 
 const tools = [
   {
@@ -32,6 +38,21 @@ const tools = [
           type: "boolean",
           description: "Include structured JSON in addition to Markdown.",
           default: false,
+        },
+        ocr_scanned_pdf: {
+          type: "boolean",
+          description: "For PDFs with little extractable text, render pages and OCR them locally.",
+          default: true,
+        },
+        ocr_language: {
+          type: "string",
+          description: "OCR language tag for scanned PDFs, for example auto, en-US, zh-Hans-CN.",
+          default: "auto",
+        },
+        max_ocr_pages: {
+          type: "integer",
+          description: "Maximum scanned PDF pages to OCR. 0 means no explicit limit. Defaults to 80.",
+          default: 80,
         },
       },
       required: ["file_path"],
@@ -76,19 +97,29 @@ function choosePython(filePath) {
   if (process.env.COURSEWARE_PYTHON) {
     return process.env.COURSEWARE_PYTHON;
   }
-  return ext === ".pdf" ? bundledPython : "python";
+  return ext === ".pdf" ? runtimePython : "python";
 }
 
 function runExtractor(args) {
   return new Promise((resolve, reject) => {
     const python = choosePython(args.file_path);
-    const py = spawn(python, [
+    const extractorArgs = [
       extractorScript,
       "--file",
       args.file_path,
       "--max-chars",
       String(args.max_chars ?? 60000),
-    ], {
+      "--ocr-language",
+      args.ocr_language || "auto",
+      "--max-ocr-pages",
+      String(args.max_ocr_pages ?? 80),
+    ];
+
+    if (args.ocr_scanned_pdf !== false) {
+      extractorArgs.push("--ocr-scanned-pdf");
+    }
+
+    const py = spawn(python, extractorArgs, {
       windowsHide: true,
       cwd: process.cwd(),
       env: {
