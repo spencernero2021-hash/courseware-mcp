@@ -7,6 +7,9 @@ Local MCP server for extracting courseware from PDF and PPTX files into structur
 - `extract_courseware`: Extracts `.pdf`, `.pptx`, or `.ppt` into Markdown and structured JSON.
 - `make_study_pack_prompt`: Produces a reusable single-pass prompt for turning extracted material into an exam-oriented study pack.
 - `make_layered_study_prompts`: Produces four separate prompts for learning extraction, mind maps, review advice, and simulated questions.
+- `make_word_summary_prompt`: Produces Word-ready Markdown instructions for clear, logical study notes.
+- `create_study_docx`: Creates a `.docx` study document from structured Markdown.
+- `create_mind_map_file`: Saves a Mermaid mind map as `.md` or `.mmd`.
 
 ## PPTX Strategy
 
@@ -63,6 +66,9 @@ Add this to `.mcp.json`, replacing paths as needed:
    - Mermaid mind map
    - review advice
    - simulated questions with answers and explanations
+5. To create files, call:
+   - `create_study_docx` with the final structured Markdown.
+   - `create_mind_map_file` with the final Mermaid `mindmap` source.
 
 ## Study Assistant Layers
 
@@ -72,3 +78,18 @@ The layered workflow is designed to make DeepSeek act less like a generic summar
 2. Mind map layer: converts the extracted knowledge into a compact Mermaid `mindmap` organized by exam logic.
 3. Review advice layer: produces review order, daily or staged plan, memorization checklist, practice checklist, final-day sprint, and self-test method.
 4. Simulated questions layer: creates exam-style questions with type, difficulty, tested point, source page/slide, answer, explanation, and common mistake reminder.
+
+## Word And Mind Map Output
+
+For Word output, first ask DeepSeek to produce structured Markdown with `make_word_summary_prompt`, then pass that Markdown to `create_study_docx`.
+
+For mind maps, ask DeepSeek to produce Mermaid `mindmap` syntax, then pass it to `create_mind_map_file`. The `.md` output can be previewed in Markdown tools that support Mermaid.
+
+Typical file-generation flow:
+
+1. `extract_courseware`
+2. `make_word_summary_prompt`
+3. DeepSeek writes structured Markdown
+4. `create_study_docx`
+5. DeepSeek writes Mermaid `mindmap`
+6. `create_mind_map_file`
