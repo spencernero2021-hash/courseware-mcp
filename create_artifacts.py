@@ -75,6 +75,36 @@ def normalize_markdown(markdown):
     return "\n".join(lines).strip()
 
 
+def set_style_font(style, name="宋体", size_pt=12, bold=None, color=None):
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    style.font.name = name
+    style.font.size = Pt(size_pt)
+    if bold is not None:
+        style.font.bold = bold
+    if color is not None:
+        style.font.color.rgb = color
+    r_pr = style._element.get_or_add_rPr()
+    r_fonts = r_pr.get_or_add_rFonts()
+    for attr in ("ascii", "hAnsi", "eastAsia", "cs"):
+        r_fonts.set(qn(f"w:{attr}"), name)
+
+
+def set_run_font(run, name="宋体", size_pt=12, bold=None):
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    run.font.name = name
+    run.font.size = Pt(size_pt)
+    if bold is not None:
+        run.bold = bold
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.get_or_add_rFonts()
+    for attr in ("ascii", "hAnsi", "eastAsia", "cs"):
+        r_fonts.set(qn(f"w:{attr}"), name)
+
+
 def configure_doc(doc):
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Inches, Pt, RGBColor
@@ -86,45 +116,39 @@ def configure_doc(doc):
     section.right_margin = Inches(0.85)
 
     styles = doc.styles
-    styles["Normal"].font.name = "Arial"
-    styles["Normal"].font.size = Pt(10.5)
+    set_style_font(styles["Normal"], "宋体", 12)
     styles["Normal"].paragraph_format.space_after = Pt(6)
     styles["Normal"].paragraph_format.line_spacing = 1.15
 
     for name, size, color in [
-        ("Heading 1", 18, RGBColor(31, 78, 121)),
-        ("Heading 2", 14, RGBColor(47, 84, 150)),
+        ("Heading 1", 12, RGBColor(31, 78, 121)),
+        ("Heading 2", 12, RGBColor(47, 84, 150)),
         ("Heading 3", 12, RGBColor(68, 68, 68)),
     ]:
         style = styles[name]
-        style.font.name = "Arial"
-        style.font.size = Pt(size)
-        style.font.bold = True
-        style.font.color.rgb = color
+        set_style_font(style, "黑体", size, bold=True, color=color)
         style.paragraph_format.space_before = Pt(10)
         style.paragraph_format.space_after = Pt(4)
 
     title_style = styles.add_style("Study Title", 1)
-    title_style.font.name = "Arial"
-    title_style.font.size = Pt(24)
-    title_style.font.bold = True
-    title_style.font.color.rgb = RGBColor(31, 78, 121)
+    set_style_font(title_style, "黑体", 12, bold=True, color=RGBColor(31, 78, 121))
     title_style.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title_style.paragraph_format.space_after = Pt(6)
 
     subtitle_style = styles.add_style("Study Subtitle", 1)
-    subtitle_style.font.name = "Arial"
-    subtitle_style.font.size = Pt(11)
-    subtitle_style.font.color.rgb = RGBColor(89, 89, 89)
+    set_style_font(subtitle_style, "宋体", 12, color=RGBColor(89, 89, 89))
     subtitle_style.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
     subtitle_style.paragraph_format.space_after = Pt(14)
 
     code_style = styles.add_style("Code Block", 1)
-    code_style.font.name = "Consolas"
-    code_style.font.size = Pt(8.5)
+    set_style_font(code_style, "宋体", 12)
     code_style.paragraph_format.left_indent = Inches(0.25)
     code_style.paragraph_format.space_before = Pt(4)
     code_style.paragraph_format.space_after = Pt(6)
+
+    for list_style_name in ("List Bullet", "List Number"):
+        if list_style_name in styles:
+            set_style_font(styles[list_style_name], "宋体", 12)
 
 
 def add_inline_markdown(paragraph, text):
@@ -138,14 +162,14 @@ def add_inline_markdown(paragraph, text):
         token = match.group(0)
         if token.startswith("**"):
             run = paragraph.add_run(token[2:-2])
-            run.bold = True
+            set_run_font(run, "宋体", 12, bold=True)
         elif token.startswith("`"):
             run = paragraph.add_run(token[1:-1])
-            run.font.name = "Consolas"
-            run.font.size = Pt(9)
+            set_run_font(run, "宋体", 12)
         pos = match.end()
     if pos < len(text):
-        paragraph.add_run(text[pos:])
+        run = paragraph.add_run(text[pos:])
+        set_run_font(run, "宋体", 12)
 
 
 def is_table_separator(line):
@@ -166,13 +190,10 @@ def split_table_row(line):
 
 
 def add_box_table(doc, table_lines):
-    from docx.shared import Pt
-
     for line in table_lines:
         p = doc.add_paragraph(style="Code Block")
         run = p.add_run(line)
-        run.font.name = "Consolas"
-        run.font.size = Pt(7.5 if len(line) > 70 else 8.5)
+        set_run_font(run, "宋体", 12)
 
 
 def add_markdown_table(doc, table_lines):
@@ -205,8 +226,7 @@ def add_markdown_to_doc(doc, markdown):
             for line in block["text"].splitlines() or [""]:
                 p = doc.add_paragraph(style="Code Block")
                 run = p.add_run(line)
-                run.font.name = "Consolas"
-                run.font.size = Pt(8.5)
+                set_run_font(run, "宋体", 12)
             pending_number = 1
             index += 1
             continue
