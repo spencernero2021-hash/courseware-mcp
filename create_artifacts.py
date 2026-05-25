@@ -47,6 +47,34 @@ def iter_markdown_blocks(markdown):
         yield {"type": "code", "language": code_lang, "text": "\n".join(code_lines)}
 
 
+def strip_outer_markdown_fence(markdown):
+    text = (markdown or "").strip()
+    match = re.match(r"^```(?:markdown|md)?\s*(.*?)```$", text, flags=re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return markdown or ""
+
+
+def normalize_markdown(markdown):
+    text = strip_outer_markdown_fence(markdown)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines = []
+    for raw in text.split("\n"):
+        line = raw.rstrip()
+        stripped = line.strip()
+        if re.match(r"^[一二三四五六七八九十]+[、.]\s*", stripped):
+            lines.append("## " + re.sub(r"^[一二三四五六七八九十]+[、.]\s*", "", stripped))
+            continue
+        if re.match(r"^第[一二三四五六七八九十0-9]+[章节部分]\s*[:：]?\s*", stripped):
+            lines.append("## " + stripped)
+            continue
+        if re.match(r"^(核心概念|重点|难点|总结|复习建议|学习建议|知识结构|主线)[:：]\s*$", stripped):
+            lines.append("## " + stripped.rstrip(":："))
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def configure_doc(doc):
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Inches, Pt, RGBColor
@@ -99,11 +127,66 @@ def configure_doc(doc):
     code_style.paragraph_format.space_after = Pt(6)
 
 
-def add_markdown_to_doc(doc, markdown):
+def add_inline_markdown(paragraph, text):
     from docx.shared import Pt
 
+    pattern = re.compile(r"(\*\*[^*]+\*\*|`[^`]+`)")
+    pos = 0
+    for match in pattern.finditer(text):
+        if match.start() > pos:
+            paragraph.add_run(text[pos:match.start()])
+        token = match.group(0)
+        if token.startswith("**"):
+            run = paragraph.add_run(token[2:-2])
+            run.bold = True
+        elif token.startswith("`"):
+            run = paragraph.add_run(token[1:-1])
+            run.font.name = "Consolas"
+            run.font.size = Pt(9)
+        pos = match.end()
+    if pos < len(text):
+        paragraph.add_run(text[pos:])
+
+
+def is_table_separator(line):
+    return bool(re.match(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$", line))
+
+
+def is_table_row(line):
+    return "|" in line and not line.strip().startswith("```")
+
+
+def split_table_row(line):
+    cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+    return cells
+
+
+def add_markdown_table(doc, table_lines):
+    rows = [split_table_row(line) for line in table_lines if not is_table_separator(line)]
+    if not rows:
+        return
+    column_count = max(len(row) for row in rows)
+    table = doc.add_table(rows=0, cols=column_count)
+    table.style = "Table Grid"
+    for row_index, row_values in enumerate(rows):
+        cells = table.add_row().cells
+        for col_index in range(column_count):
+            value = row_values[col_index] if col_index < len(row_values) else ""
+            paragraph = cells[col_index].paragraphs[0]
+            add_inline_markdown(paragraph, value)
+            if row_index == 0:
+                for run in paragraph.runs:
+                    run.bold = True
+
+
+def add_markdown_to_doc(doc, markdown):
+    from docx.shared import Inches, Pt
+
     pending_number = 1
-    for block in iter_markdown_blocks(markdown):
+    blocks = list(iter_markdown_blocks(normalize_markdown(markdown)))
+    index = 0
+    while index < len(blocks):
+        block = blocks[index]
         if block["type"] == "code":
             for line in block["text"].splitlines() or [""]:
                 p = doc.add_paragraph(style="Code Block")
@@ -111,11 +194,22 @@ def add_markdown_to_doc(doc, markdown):
                 run.font.name = "Consolas"
                 run.font.size = Pt(8.5)
             pending_number = 1
+            index += 1
             continue
 
         line = block["text"]
         stripped = line.strip()
         if not stripped:
+            pending_number = 1
+            index += 1
+            continue
+
+        if is_table_row(stripped):
+            table_lines = []
+            while index < len(blocks) and blocks[index]["type"] == "line" and is_table_row(blocks[index]["text"].strip()):
+                table_lines.append(blocks[index]["text"].strip())
+                index += 1
+            add_markdown_table(doc, table_lines)
             pending_number = 1
             continue
 
@@ -126,12 +220,18 @@ def add_markdown_to_doc(doc, markdown):
         elif stripped.startswith("### "):
             doc.add_heading(stripped[4:].strip(), level=3)
         elif re.match(r"^[-*]\s+", stripped):
-            doc.add_paragraph(re.sub(r"^[-*]\s+", "", stripped), style="List Bullet")
+            indent_level = max(0, (len(line) - len(line.lstrip(" "))) // 2)
+            p = doc.add_paragraph(style="List Bullet")
+            p.paragraph_format.left_indent = Inches(0.25 + 0.18 * indent_level)
+            add_inline_markdown(p, re.sub(r"^[-*]\s+", "", stripped))
         elif re.match(r"^\d+[.)]\s+", stripped):
-            doc.add_paragraph(re.sub(r"^\d+[.)]\s+", "", stripped), style="List Number")
+            p = doc.add_paragraph(style="List Number")
+            add_inline_markdown(p, re.sub(r"^\d+[.)]\s+", "", stripped))
             pending_number += 1
         else:
-            doc.add_paragraph(stripped)
+            p = doc.add_paragraph()
+            add_inline_markdown(p, stripped)
+        index += 1
 
 
 def create_study_docx(payload):
