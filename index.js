@@ -132,6 +132,56 @@ const tools = [
     },
   },
   {
+    name: "make_exam_pack_prompt",
+    description:
+      "Create a product-style DeepSeek prompt for turning diagnosed and extracted courseware into a complete exam review pack: intake report, Word-ready notes, mind map, review plan, and mock questions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        exam_goal: {
+          type: "string",
+          description: "Exam goal, course name, or study scenario.",
+          default: "prepare for an exam",
+        },
+        student_level: {
+          type: "string",
+          description: "Student level, for example beginner, normal, advanced, or sprint review.",
+          default: "normal",
+        },
+        days_available: {
+          type: "integer",
+          description: "Number of days available for review. If omitted, produce flexible plans.",
+        },
+        question_count: {
+          type: "integer",
+          description: "Number of mock exam questions to include.",
+          default: 25,
+        },
+        output_language: {
+          type: "string",
+          description: "Output language. Defaults to Chinese.",
+          default: "Chinese",
+        },
+        include_word_notes: {
+          type: "boolean",
+          description: "Whether the final pack should include Word-ready structured notes.",
+          default: true,
+        },
+        include_mind_map: {
+          type: "boolean",
+          description: "Whether the final pack should include a Mermaid mind map.",
+          default: true,
+        },
+        include_mock_questions: {
+          type: "boolean",
+          description: "Whether the final pack should include mock exam questions.",
+          default: true,
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "make_layered_study_prompts",
     description:
       "Create four separate DeepSeek prompts for learning extraction, Mermaid mind map generation, review planning, and simulated exam questions.",
@@ -402,6 +452,77 @@ function makeStudyPackPrompt(args = {}) {
   ].join("\n");
 }
 
+function makeExamPackPrompt(args = {}) {
+  const goal = args.exam_goal || "prepare for an exam";
+  const language = args.output_language || "Chinese";
+  const level = args.student_level || "normal";
+  const questionCount = args.question_count ?? 25;
+  const days = args.days_available
+    ? `The student has ${args.days_available} day(s) available for review.`
+    : "No fixed exam date is provided; include both sprint and normal review options.";
+  const includeWord = args.include_word_notes !== false;
+  const includeMindMap = args.include_mind_map !== false;
+  const includeQuestions = args.include_mock_questions !== false;
+
+  const artifacts = [
+    includeWord ? "- Word-ready structured Markdown notes suitable for `courseware.create_study_docx`." : "",
+    includeMindMap ? "- Mermaid `mindmap` source suitable for `courseware.create_mind_map_file`." : "",
+    includeQuestions ? `- ${questionCount} mock exam questions with answers and explanations.` : "",
+  ].filter(Boolean).join("\n");
+
+  return [
+    "# Exam Pack Prompt",
+    "",
+    "You are helping create a complete exam review pack from courseware.",
+    `Goal: ${goal}.`,
+    `Student level: ${level}. ${days}`,
+    `Output language: ${language}.`,
+    "",
+    "Inputs you should use:",
+    "1. The `intake_report` from `courseware.diagnose_courseware_intake` or `courseware.extract_courseware`.",
+    "2. The extracted courseware Markdown from `courseware.extract_courseware`.",
+    "3. Any user-specific exam requirements.",
+    "",
+    "Critical reliability rules:",
+    "- Start by reading the intake report.",
+    "- If intake status is `poor` or `failed`, do not produce a confident full study pack. Explain what was unreadable and ask for OCR/visual recovery first.",
+    "- If intake status is `partial`, produce the pack but clearly mark low-text, empty, uncertain, or OCR-dependent pages/slides.",
+    "- Never invent material for unread pages/slides.",
+    "- Preserve page/slide references whenever possible.",
+    "",
+    "Required Exam Pack structure:",
+    "## 1. Intake Summary",
+    "- Status, coverage, OCR usage, unread/low-text units, and what that means for trustworthiness.",
+    "## 2. Course Knowledge Map",
+    "- Reorganize the courseware into modules, subtopics, prerequisites, and dependency relationships.",
+    "## 3. High-Frequency Exam Points",
+    "- Rank each point as high/medium/low priority with reasons and source references.",
+    "## 4. Core Notes",
+    "- Definitions, concepts, formulas, procedures, examples, comparisons, and common traps.",
+    "## 5. Difficult Points And Common Mistakes",
+    "- Explain why each point is difficult, how it appears in exams, and how to avoid mistakes.",
+    "## 6. Review Plan",
+    "- Review order, memorization targets, practice targets, final-day checklist, and short-time fallback plan.",
+    includeMindMap ? "## 7. Mermaid Mind Map\n- Output one compact Mermaid `mindmap` code block organized by exam logic, not slide order." : "",
+    includeQuestions ? `## 8. Mock Exam Questions\n- Create ${questionCount} questions with type, difficulty, tested point, source reference, answer, explanation, and common mistake reminder.` : "",
+    includeWord ? "## 9. Word Document Markdown\n- Provide a clean Markdown version of the final notes that can be passed to `courseware.create_study_docx`." : "",
+    "",
+    "Artifact targets:",
+    artifacts || "- No file artifacts requested; produce the pack in Markdown.",
+    "",
+    "Question mix guidance:",
+    "- Use choice, judgment, fill-in, short answer, calculation/application, or comprehensive questions as appropriate for the subject.",
+    "- Include at least 20% common-mistake questions if mock questions are requested.",
+    "- Mark each question as easy, medium, or hard.",
+    "",
+    "Style rules:",
+    "- Be structured, concise, and exam-oriented.",
+    "- Do not merely summarize slides in order.",
+    "- Prefer tables for comparisons and prioritized lists for exam points.",
+    "- When uncertain because of OCR or missing text, say exactly which page/slide caused the uncertainty.",
+  ].filter(Boolean).join("\n");
+}
+
 function makeLayeredStudyPrompts(args = {}) {
   const goal = args.exam_goal || "prepare for an exam";
   const questionCount = args.question_count ?? 20;
@@ -599,6 +720,18 @@ async function handle(request) {
         id,
         result: {
           content: [{ type: "text", text: makeStudyPackPrompt(args) }],
+        },
+      };
+    }
+
+    if (name === "make_exam_pack_prompt") {
+      const prompt = makeExamPackPrompt(args);
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: prompt }],
+          structuredContent: { prompt },
         },
       };
     }

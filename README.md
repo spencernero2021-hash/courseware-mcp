@@ -6,6 +6,7 @@ Local MCP server for extracting courseware from PDF and PPTX files into structur
 
 - `extract_courseware`: Extracts `.pdf`, `.pptx`, or `.ppt` into Markdown and structured JSON.
 - `diagnose_courseware_intake`: Reports whether the file was actually readable before summarization, including per-page/per-slide text coverage, OCR use, likely image-only units, warnings, and recommendations.
+- `make_exam_pack_prompt`: Produces a product-style prompt for turning diagnosed and extracted courseware into a complete exam review pack.
 - `make_study_pack_prompt`: Produces a reusable single-pass prompt for turning extracted material into an exam-oriented study pack.
 - `make_layered_study_prompts`: Produces four separate prompts for learning extraction, mind maps, review advice, and simulated questions.
 - `make_word_summary_prompt`: Produces Word-ready Markdown instructions for clear, logical study notes.
@@ -73,21 +74,38 @@ Add this to `.mcp.json`, replacing paths as needed:
 2. Call `extract_courseware` on the PDF/PPTX.
    - For scanned Chinese PDFs, pass `ocr_language: "zh-Hans-CN"`.
    - For scanned English PDFs, pass `ocr_language: "en-US"`.
-3. For short courseware, call `make_study_pack_prompt` and generate the whole study pack in one pass.
-4. For long courseware, call `make_layered_study_prompts` and generate these layers separately:
+3. For an end-to-end student-facing output, call `make_exam_pack_prompt` and generate a complete Exam Pack.
+4. For short courseware, call `make_study_pack_prompt` and generate the whole study pack in one pass.
+5. For long courseware, call `make_layered_study_prompts` and generate these layers separately:
    - learning extraction
    - Mermaid mind map
    - review advice
    - simulated questions
-5. Use the extracted Markdown plus the selected prompt to generate:
+6. Use the extracted Markdown plus the selected prompt to generate:
    - key points
    - difficult and error-prone points
    - Mermaid mind map
    - review advice
    - simulated questions with answers and explanations
-6. To create files, call:
+7. To create files, call:
    - `create_study_docx` with the final structured Markdown.
    - `create_mind_map_file` with the final Mermaid `mindmap` source.
+
+## Exam Pack Workflow
+
+`make_exam_pack_prompt` is the high-level workflow entrypoint. It keeps the lower-level MCP tools intact, but packages them into a student-facing outcome:
+
+- intake summary and trustworthiness notes
+- course knowledge map
+- high-frequency exam points
+- core notes
+- difficult points and common mistakes
+- review plan
+- Mermaid mind map
+- mock exam questions with answers
+- Word-ready Markdown notes
+
+The prompt requires DeepSeek to read `intake_report` first, so it can avoid the common failure mode where an assistant summarizes files that were only partially read.
 
 ## Study Assistant Layers
 
@@ -108,8 +126,8 @@ Typical file-generation flow:
 
 1. `diagnose_courseware_intake`
 2. `extract_courseware`
-3. `make_word_summary_prompt`
-4. DeepSeek writes structured Markdown
+3. `make_exam_pack_prompt`
+4. DeepSeek writes the Exam Pack and Word-ready Markdown
 5. `create_study_docx`
 6. DeepSeek writes Mermaid `mindmap`
 7. `create_mind_map_file`
