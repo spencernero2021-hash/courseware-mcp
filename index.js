@@ -61,6 +61,42 @@ const tools = [
     },
   },
   {
+    name: "diagnose_courseware_intake",
+    description:
+      "Run a courseware intake diagnosis before summarization. Reports per-page/per-slide text coverage, OCR use, unread units, likely scanned/image-only content, warnings, and recommended next steps.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        file_path: {
+          type: "string",
+          description: "Path to a .pdf, .pptx, or .ppt file.",
+        },
+        ocr_scanned_pdf: {
+          type: "boolean",
+          description: "For PDFs with little extractable text, render pages and OCR them locally.",
+          default: true,
+        },
+        ocr_language: {
+          type: "string",
+          description: "OCR language tag for scanned PDFs, for example auto, en-US, zh-Hans-CN.",
+          default: "auto",
+        },
+        max_ocr_pages: {
+          type: "integer",
+          description: "Maximum scanned PDF pages to OCR. 0 means no explicit limit. Defaults to 80.",
+          default: 80,
+        },
+        include_units: {
+          type: "boolean",
+          description: "Include detailed per-page/per-slide structured unit diagnostics.",
+          default: true,
+        },
+      },
+      required: ["file_path"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "make_study_pack_prompt",
     description:
       "Create a focused DeepSeek prompt for turning extracted courseware into key points, a Mermaid mind map, review advice, and exam-style questions.",
@@ -497,6 +533,43 @@ function makeWordSummaryPrompt(args = {}) {
   ].join("\n");
 }
 
+function summarizeIntakeReport(report, includeUnits = true) {
+  const lines = [
+    "# Courseware Intake Report",
+    "",
+    `- File: ${report.file}`,
+    `- Type: ${report.type}`,
+    `- Status: ${report.status}`,
+    `- Units: ${report.total_units}`,
+    `- Total text characters: ${report.total_text_chars}`,
+    `- Average text characters per unit: ${report.average_text_chars}`,
+    `- Good coverage: ${report.coverage_percent}%`,
+    `- Low/empty units: ${(report.low_text_units || []).length ? report.low_text_units.join(", ") : "none"}`,
+  ];
+  if (report.ocr_used_units?.length) {
+    lines.push(`- OCR used units: ${report.ocr_used_units.join(", ")}`);
+  }
+  if (report.possibly_image_only_units?.length) {
+    lines.push(`- Possibly image-only units: ${report.possibly_image_only_units.join(", ")}`);
+  }
+  if (report.warnings?.length) {
+    lines.push("", "## Warnings", ...report.warnings.map((warning) => `- ${warning}`));
+  }
+  if (report.recommendations?.length) {
+    lines.push("", "## Recommendations", ...report.recommendations.map((item) => `- ${item}`));
+  }
+  if (includeUnits && report.units?.length) {
+    lines.push("", "## Unit Details");
+    for (const unit of report.units) {
+      const label = unit.kind === "slide" ? "Slide" : "Page";
+      const title = unit.title ? ` - ${unit.title}` : "";
+      const flags = unit.flags?.length ? unit.flags.join(", ") : "none";
+      lines.push(`- ${label} ${unit.index}${title}: ${unit.text_chars} chars, coverage=${unit.coverage}, flags=${flags}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 async function handle(request) {
   const { id, method, params } = request;
 
@@ -570,6 +643,25 @@ async function handle(request) {
         result: {
           content: [{ type: "text", text: `Created mind map file: ${artifact.path}` }],
           structuredContent: artifact,
+        },
+      };
+    }
+
+    if (name === "diagnose_courseware_intake") {
+      const extracted = await runExtractor({
+        ...args,
+        max_chars: 2000,
+      });
+      const report = extracted.intake_report;
+      if (!args.include_units && report?.units) {
+        report.units = [];
+      }
+      return {
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: summarizeIntakeReport(report, args.include_units !== false) }],
+          structuredContent: report,
         },
       };
     }

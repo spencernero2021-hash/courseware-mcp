@@ -101,6 +101,7 @@ def slide_related_text(zf, slide_path):
     notes = ""
     chart_texts = []
     image_alts = []
+    image_count = 0
 
     if rel_data:
         root = parse_xml(rel_data)
@@ -118,6 +119,8 @@ def slide_related_text(zf, slide_path):
                     chart_text = text_from_xml(parse_xml(data))
                     if chart_text:
                         chart_texts.append(chart_text)
+            elif "image" in rel_type:
+                image_count += 1
 
     slide_data = read_zip_text(zf, slide_path)
     if slide_data:
@@ -127,7 +130,7 @@ def slide_related_text(zf, slide_path):
             if descr:
                 image_alts.append(clean_text(descr))
 
-    return notes, chart_texts, image_alts
+    return notes, chart_texts, image_alts, image_count
 
 
 def extract_pptx_ooxml(file_path):
@@ -139,7 +142,7 @@ def extract_pptx_ooxml(file_path):
                 continue
             root = parse_xml(data)
             text = text_from_xml(root)
-            notes, chart_texts, image_alts = slide_related_text(zf, slide_path)
+            notes, chart_texts, image_alts, image_count = slide_related_text(zf, slide_path)
             title = ""
             lines = [line.strip() for line in text.splitlines() if line.strip()]
             if lines:
@@ -152,6 +155,7 @@ def extract_pptx_ooxml(file_path):
                     "notes": notes,
                     "charts": chart_texts,
                     "image_alt_text": image_alts,
+                    "image_count": image_count,
                     "source": "ooxml",
                 }
             )
@@ -174,6 +178,7 @@ def extract_pptx_python_pptx(file_path):
         chunks = []
         tables = []
         title = ""
+        image_count = 0
         if slide.shapes.title and getattr(slide.shapes.title, "text", None):
             title = clean_text(slide.shapes.title.text)
 
@@ -185,6 +190,9 @@ def extract_pptx_python_pptx(file_path):
                 for row in shape.table.rows:
                     rows.append([clean_text(cell.text) for cell in row.cells])
                 tables.append(rows)
+            if getattr(shape, "shape_type", None) == 13:
+                # MSO_SHAPE_TYPE.PICTURE is 13. Avoid importing enum just for counting.
+                image_count += 1
 
         slides.append(
             {
@@ -195,6 +203,7 @@ def extract_pptx_python_pptx(file_path):
                 "notes": "",
                 "charts": [],
                 "image_alt_text": [],
+                "image_count": image_count,
                 "source": "python-pptx",
             }
         )
@@ -210,7 +219,7 @@ def merge_slides(primary, fallback):
         slide = dict(fb)
         slide.update({k: v for k, v in base.items() if v not in (None, "", [], {})})
 
-        for field in ("notes", "charts", "image_alt_text"):
+        for field in ("notes", "charts", "image_alt_text", "image_count"):
             if not slide.get(field) and fb.get(field):
                 slide[field] = fb[field]
         if not slide.get("text") and fb.get("text"):
@@ -398,12 +407,197 @@ def extract_pdf(file_path, ocr_scanned_pdf=False, ocr_language="auto", max_ocr_p
     }
 
 
+def text_length(value):
+    return len(clean_text(value or ""))
+
+
+def classify_coverage(text_chars, kind="page"):
+    if text_chars == 0:
+        return "empty"
+    very_low_threshold = OCR_TEXT_THRESHOLD_PER_PAGE if kind == "page" else 20
+    low_threshold = 120 if kind == "page" else 60
+    if text_chars < very_low_threshold:
+        return "very_low"
+    if text_chars < low_threshold:
+        return "low"
+    return "ok"
+
+
+def build_intake_report(result):
+    kind = result.get("type")
+    units = []
+    warnings = list(result.get("warnings", []))
+
+    if kind == "pptx":
+        for slide in result.get("slides", []):
+            text_chars = text_length(slide.get("text"))
+            flags = []
+            coverage = classify_coverage(text_chars, "slide")
+            if coverage in ("empty", "very_low", "low"):
+                flags.append(coverage)
+            if slide.get("source"):
+                flags.append(f"source:{slide.get('source')}")
+            if slide.get("tables"):
+                flags.append("has_tables")
+            if slide.get("charts"):
+                flags.append("has_charts")
+            if slide.get("notes"):
+                flags.append("has_notes")
+            image_count = int(slide.get("image_count") or 0)
+            if image_count:
+                flags.append(f"images:{image_count}")
+            if coverage in ("empty", "very_low") and image_count:
+                flags.append("possibly_image_only")
+            units.append(
+                {
+                    "kind": "slide",
+                    "index": slide.get("slide"),
+                    "title": slide.get("title") or "",
+                    "text_chars": text_chars,
+                    "coverage": coverage,
+                    "source": slide.get("source") or "",
+                    "image_count": image_count,
+                    "table_count": len(slide.get("tables") or []),
+                    "chart_count": len(slide.get("charts") or []),
+                    "has_notes": bool(slide.get("notes")),
+                    "flags": flags,
+                }
+            )
+    elif kind == "pdf":
+        for page in result.get("pages", []):
+            text_chars = text_length(page.get("text"))
+            extraction_chars = text_length(page.get("text_extraction"))
+            ocr_chars = text_length(page.get("ocr_text"))
+            coverage = classify_coverage(text_chars, "page")
+            flags = []
+            if coverage in ("empty", "very_low", "low"):
+                flags.append(coverage)
+            if page.get("source"):
+                flags.append(f"source:{page.get('source')}")
+            if extraction_chars == 0 and ocr_chars == 0 and coverage == "empty":
+                flags.append("unread")
+            if page.get("source") == "ocr":
+                flags.append("ocr_used")
+            if extraction_chars < OCR_TEXT_THRESHOLD_PER_PAGE and ocr_chars == 0:
+                flags.append("needs_ocr_or_visual_check")
+            units.append(
+                {
+                    "kind": "page",
+                    "index": page.get("page"),
+                    "text_chars": text_chars,
+                    "coverage": coverage,
+                    "source": page.get("source") or "",
+                    "text_extraction_chars": extraction_chars,
+                    "ocr_text_chars": ocr_chars,
+                    "flags": flags,
+                }
+            )
+
+    total_units = len(units)
+    total_chars = sum(unit["text_chars"] for unit in units)
+    empty_units = [u for u in units if u["coverage"] == "empty"]
+    low_units = [u for u in units if u["coverage"] in ("empty", "very_low", "low")]
+    ok_units = [u for u in units if u["coverage"] == "ok"]
+    ocr_used = [u for u in units if "ocr_used" in u.get("flags", [])]
+    unread = [u for u in units if "unread" in u.get("flags", [])]
+    image_only = [u for u in units if "possibly_image_only" in u.get("flags", [])]
+    coverage_percent = round((len(ok_units) / total_units) * 100, 1) if total_units else 0
+
+    if total_units == 0:
+        status = "failed"
+    elif len(unread) > 0 or coverage_percent < 50:
+        status = "poor"
+    elif low_units:
+        status = "partial"
+    else:
+        status = "good"
+
+    recommendations = []
+    if kind == "pdf":
+        ocr = result.get("ocr") or {}
+        if low_units and not ocr.get("attempted"):
+            recommendations.append("Run extraction with scanned PDF OCR enabled.")
+        if ocr.get("attempted") and ocr.get("processed_pages", 0) < total_units:
+            recommendations.append("Increase max_ocr_pages or process the remaining pages.")
+        if unread:
+            recommendations.append("Manually inspect unread pages or use a visual model for those pages.")
+    elif kind == "pptx":
+        if image_only:
+            recommendations.append("Some slides look image-only. Export those slides as images or PDF, then run OCR/visual analysis.")
+        if low_units:
+            recommendations.append("Check low-text slides manually; they may contain diagrams or embedded screenshots.")
+    if warnings:
+        recommendations.append("Review extractor warnings before trusting the generated study pack.")
+    if not recommendations:
+        recommendations.append("Extraction coverage looks sufficient for summarization and study-pack generation.")
+
+    return {
+        "status": status,
+        "type": kind,
+        "file": result.get("file"),
+        "total_units": total_units,
+        "total_text_chars": total_chars,
+        "average_text_chars": round(total_chars / total_units, 1) if total_units else 0,
+        "coverage_percent": coverage_percent,
+        "empty_units": [u["index"] for u in empty_units],
+        "low_text_units": [u["index"] for u in low_units],
+        "ocr_used_units": [u["index"] for u in ocr_used],
+        "possibly_image_only_units": [u["index"] for u in image_only],
+        "warnings": warnings,
+        "recommendations": recommendations,
+        "units": units,
+    }
+
+
+def intake_report_to_markdown(report):
+    lines = [
+        "# Courseware Intake Report",
+        "",
+        f"- File: {report.get('file')}",
+        f"- Type: {report.get('type')}",
+        f"- Status: {report.get('status')}",
+        f"- Units: {report.get('total_units')}",
+        f"- Total text characters: {report.get('total_text_chars')}",
+        f"- Average text characters per unit: {report.get('average_text_chars')}",
+        f"- Good coverage: {report.get('coverage_percent')}%",
+        f"- Low/empty units: {report.get('low_text_units') or 'none'}",
+    ]
+    if report.get("ocr_used_units"):
+        lines.append(f"- OCR used units: {report.get('ocr_used_units')}")
+    if report.get("possibly_image_only_units"):
+        lines.append(f"- Possibly image-only units: {report.get('possibly_image_only_units')}")
+    if report.get("warnings"):
+        lines.append("")
+        lines.append("## Warnings")
+        for warning in report["warnings"]:
+            lines.append(f"- {warning}")
+    lines.append("")
+    lines.append("## Recommendations")
+    for item in report.get("recommendations", []):
+        lines.append(f"- {item}")
+    lines.append("")
+    lines.append("## Unit Details")
+    for unit in report.get("units", []):
+        label = "Slide" if unit.get("kind") == "slide" else "Page"
+        flags = ", ".join(unit.get("flags") or []) or "none"
+        title = f" - {unit.get('title')}" if unit.get("title") else ""
+        lines.append(
+            f"- {label} {unit.get('index')}{title}: {unit.get('text_chars')} chars, "
+            f"coverage={unit.get('coverage')}, flags={flags}"
+        )
+    return "\n".join(lines).strip()
+
+
 def result_to_markdown(result, max_chars):
     path = Path(result["file"])
+    result["intake_report"] = build_intake_report(result)
+    result["intake_report_markdown"] = intake_report_to_markdown(result["intake_report"])
     lines = [
         f"# Courseware Extraction: {path.name}",
         "",
         f"- Type: {result['type']}",
+        f"- Intake status: {result['intake_report']['status']}",
+        f"- Extraction coverage: {result['intake_report']['coverage_percent']}%",
     ]
 
     if result.get("slide_count") is not None:

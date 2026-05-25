@@ -5,6 +5,7 @@ Local MCP server for extracting courseware from PDF and PPTX files into structur
 ## Tools
 
 - `extract_courseware`: Extracts `.pdf`, `.pptx`, or `.ppt` into Markdown and structured JSON.
+- `diagnose_courseware_intake`: Reports whether the file was actually readable before summarization, including per-page/per-slide text coverage, OCR use, likely image-only units, warnings, and recommendations.
 - `make_study_pack_prompt`: Produces a reusable single-pass prompt for turning extracted material into an exam-oriented study pack.
 - `make_layered_study_prompts`: Produces four separate prompts for learning extraction, mind maps, review advice, and simulated questions.
 - `make_word_summary_prompt`: Produces Word-ready Markdown instructions for clear, logical study notes.
@@ -30,6 +31,22 @@ Useful `extract_courseware` PDF options:
 - `ocr_language`: `auto`, `en-US`, or `zh-Hans-CN`.
 - `max_ocr_pages`: defaults to `80`; set `0` for no explicit limit.
 
+## Intake Diagnosis
+
+Use `diagnose_courseware_intake` when you need to know whether the uploaded material was actually read successfully before asking DeepSeek to summarize it.
+
+The report includes:
+
+- status: `good`, `partial`, `poor`, or `failed`
+- total pages/slides and text character coverage
+- low-text or empty pages/slides
+- pages where OCR was used
+- likely image-only slides
+- extractor warnings
+- recommended next steps
+
+This is designed to avoid black-box failures where a courseware assistant appears to accept a file but silently misses scanned pages, image-only slides, or unreadable content.
+
 ## Claude Code config
 
 Add this to `.mcp.json`, replacing paths as needed:
@@ -51,22 +68,24 @@ Add this to `.mcp.json`, replacing paths as needed:
 
 ## Recommended DeepSeek Workflow
 
-1. Call `extract_courseware` on the PDF/PPTX.
+1. Call `diagnose_courseware_intake` on the PDF/PPTX when reliability matters.
+   - If status is `poor` or many units are low-text, fix OCR/visual extraction before summarizing.
+2. Call `extract_courseware` on the PDF/PPTX.
    - For scanned Chinese PDFs, pass `ocr_language: "zh-Hans-CN"`.
    - For scanned English PDFs, pass `ocr_language: "en-US"`.
-2. For short courseware, call `make_study_pack_prompt` and generate the whole study pack in one pass.
-3. For long courseware, call `make_layered_study_prompts` and generate these layers separately:
+3. For short courseware, call `make_study_pack_prompt` and generate the whole study pack in one pass.
+4. For long courseware, call `make_layered_study_prompts` and generate these layers separately:
    - learning extraction
    - Mermaid mind map
    - review advice
    - simulated questions
-4. Use the extracted Markdown plus the selected prompt to generate:
+5. Use the extracted Markdown plus the selected prompt to generate:
    - key points
    - difficult and error-prone points
    - Mermaid mind map
    - review advice
    - simulated questions with answers and explanations
-5. To create files, call:
+6. To create files, call:
    - `create_study_docx` with the final structured Markdown.
    - `create_mind_map_file` with the final Mermaid `mindmap` source.
 
@@ -87,9 +106,10 @@ For mind maps, ask DeepSeek to produce Mermaid `mindmap` syntax, then pass it to
 
 Typical file-generation flow:
 
-1. `extract_courseware`
-2. `make_word_summary_prompt`
-3. DeepSeek writes structured Markdown
-4. `create_study_docx`
-5. DeepSeek writes Mermaid `mindmap`
-6. `create_mind_map_file`
+1. `diagnose_courseware_intake`
+2. `extract_courseware`
+3. `make_word_summary_prompt`
+4. DeepSeek writes structured Markdown
+5. `create_study_docx`
+6. DeepSeek writes Mermaid `mindmap`
+7. `create_mind_map_file`
