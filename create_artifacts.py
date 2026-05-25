@@ -156,9 +156,23 @@ def is_table_row(line):
     return "|" in line and not line.strip().startswith("```")
 
 
+def is_box_table_line(line):
+    return bool(re.search(r"[┌┬┐├┼┤└┴┘│─]", line))
+
+
 def split_table_row(line):
     cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
     return cells
+
+
+def add_box_table(doc, table_lines):
+    from docx.shared import Pt
+
+    for line in table_lines:
+        p = doc.add_paragraph(style="Code Block")
+        run = p.add_run(line)
+        run.font.name = "Consolas"
+        run.font.size = Pt(7.5 if len(line) > 70 else 8.5)
 
 
 def add_markdown_table(doc, table_lines):
@@ -202,6 +216,15 @@ def add_markdown_to_doc(doc, markdown):
         if not stripped:
             pending_number = 1
             index += 1
+            continue
+
+        if is_box_table_line(stripped):
+            table_lines = []
+            while index < len(blocks) and blocks[index]["type"] == "line" and is_box_table_line(blocks[index]["text"].strip()):
+                table_lines.append(blocks[index]["text"].rstrip())
+                index += 1
+            add_box_table(doc, table_lines)
+            pending_number = 1
             continue
 
         if is_table_row(stripped):
